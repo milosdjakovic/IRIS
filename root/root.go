@@ -15,7 +15,10 @@ import (
 	"strings"
 	"syscall"
 
+	"image/color"
+
 	"charm.land/lipgloss/v2"
+	"github.com/lucasb-eyer/go-colorful"
 	"github.com/spf13/cobra"
 	_ "github.com/versenilvis/iris/commands"
 	"github.com/versenilvis/iris/internal/config"
@@ -106,19 +109,59 @@ func relayWatchdogCWD(r io.Reader) {
 // read of the terminal's answer. Ask any later, once the wrapper is relaying stdin,
 // and the reply is consumed by whatever is decoding keystrokes.
 //
-// An empty return means do not decide, which leaves the child on the dark default.
+// It asks every time rather than trusting an answer already in the environment. That
+// was the first version and it was wrong. The variable travels to the shell, so a new
+// iris started from that shell inherits it, and once a session had decided "light" the
+// decision outlived the terminal it was made about. A stale answer beat a terminal
+// saying otherwise, which is the exact opposite of the point.
+//
+// An empty return means the terminal did not answer, which is different from answering
+// dark. Only then does whatever the environment already holds survive, which is what
+// lets a value set by hand serve as the escape hatch for a terminal that cannot answer.
 func detectBackground(in *os.File) string {
-	if existing := strings.TrimSpace(os.Getenv(config.BackgroundEnv)); existing != "" {
-		// Already answered, by a user who wants a half pinned or by a parent iris.
-		return ""
-	}
 	if in == nil || !term.IsTerminal(int(in.Fd())) {
 		return ""
 	}
-	if lipgloss.HasDarkBackground(in, os.Stdout) {
+	// Both handles are the tty we already hold, rather than in and os.Stdout. lipgloss
+	// refuses unless both are terminals, and the watchdog's stdout is not always one, so
+	// pairing them was returning "input/output is not a terminal" on a perfectly good
+	// terminal. HasDarkBackground hid that by answering true for any failure, which reads
+	// as a terminal that said dark and is exactly the confusion worth not having.
+	bg, err := lipgloss.BackgroundColor(in, in)
+	if err != nil || bg == nil {
+		return ""
+	}
+	if isDarkBackground(bg) {
 		return "dark"
 	}
 	return "light"
+}
+
+// isDarkBackground matches the rule lipgloss applies internally, lightness below half
+// in HSL. It is spelled out here because BackgroundColor hands back a colour and the
+// classifier beside it is not exported, and because HasDarkBackground answers true for
+// a terminal that said nothing at all, which is the one case that has to stay separate.
+func isDarkBackground(c color.Color) bool {
+	col, ok := colorful.MakeColor(c)
+	if !ok {
+		return true
+	}
+	_, _, l := col.Hsl()
+	return l < 0.5
+}
+
+// withBackground replaces any inherited answer rather than appending beside it, since a
+// duplicate key in a child's environment is resolved differently by different readers
+// and the whole point is that the fresh answer wins.
+func withBackground(env []string, bg string) []string {
+	prefix := config.BackgroundEnv + "="
+	out := env[:0:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return append(out, prefix+bg)
 }
 
 // runWatchdog spawns the watchdog parent process
@@ -155,7 +198,7 @@ func runWatchdog() {
 	cmd := exec.CommandContext(context.Background(), exe, os.Args[1:]...)
 	cmd.Env = append(os.Environ(), "IRIS_IS_CHILD=true")
 	if bg := detectBackground(cmdStdin); bg != "" {
-		cmd.Env = append(cmd.Env, config.BackgroundEnv+"="+bg)
+		cmd.Env = withBackground(cmd.Env, bg)
 	}
 	cmd.Stdin = cmdStdin
 	cmd.Stdout = os.Stdout
