@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	_ "github.com/versenilvis/iris/commands"
 	"github.com/versenilvis/iris/internal/config"
@@ -96,6 +97,30 @@ func relayWatchdogCWD(r io.Reader) {
 	}
 }
 
+// detectBackground asks the terminal what it is painting behind us, so a theme can
+// have a half for each appearance instead of one set of colours that has to survive
+// both. lipgloss sends OSC 11 and reads the reply.
+//
+// It belongs here and nowhere else. The watchdog is the only process that holds the
+// outer tty with nothing else reading it, and the query is a write followed by a
+// read of the terminal's answer. Ask any later, once the wrapper is relaying stdin,
+// and the reply is consumed by whatever is decoding keystrokes.
+//
+// An empty return means do not decide, which leaves the child on the dark default.
+func detectBackground(in *os.File) string {
+	if existing := strings.TrimSpace(os.Getenv(config.BackgroundEnv)); existing != "" {
+		// Already answered, by a user who wants a half pinned or by a parent iris.
+		return ""
+	}
+	if in == nil || !term.IsTerminal(int(in.Fd())) {
+		return ""
+	}
+	if lipgloss.HasDarkBackground(in, os.Stdout) {
+		return "dark"
+	}
+	return "light"
+}
+
 // runWatchdog spawns the watchdog parent process
 func runWatchdog() {
 	exe, err := os.Executable()
@@ -129,6 +154,9 @@ func runWatchdog() {
 
 	cmd := exec.CommandContext(context.Background(), exe, os.Args[1:]...)
 	cmd.Env = append(os.Environ(), "IRIS_IS_CHILD=true")
+	if bg := detectBackground(cmdStdin); bg != "" {
+		cmd.Env = append(cmd.Env, config.BackgroundEnv+"="+bg)
+	}
 	cmd.Stdin = cmdStdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = w

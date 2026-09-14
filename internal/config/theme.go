@@ -3,10 +3,21 @@ package config
 import (
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
 )
+
+// BackgroundEnv carries the terminal's background from the watchdog, which asks
+// for it once while it still owns the tty on its own, down to the process that
+// draws. It is an environment variable for the same reason ConfigDirEnv is, the
+// shell rc starts the real session with a bare `exec iris` and arguments do not
+// survive that boundary.
+//
+// Setting it by hand is supported and skips the query, which is the escape hatch
+// for a terminal that answers OSC 11 wrongly or not at all.
+const BackgroundEnv = "IRIS_TERM_BACKGROUND"
 
 var defaultTheme = ThemeStyles{
 	Border:     "#a277ff",
@@ -63,9 +74,31 @@ type ThemeStyles struct {
 	AliasSel   string `toml:"alias_sel"`
 }
 
+// BackgroundIsDark reports whether the terminal is painting a dark background,
+// reading only what the watchdog already determined. It never queries anything
+// itself: by the time the drawing process runs, the wrapper is relaying stdin and
+// a terminal's reply to an OSC 11 query would be read by the wrong reader.
+//
+// Unset means dark, which is what lipgloss returns when a terminal declines to
+// answer, and matches the palette iris shipped as its default for its whole life.
+func BackgroundIsDark() bool {
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv(BackgroundEnv)), "light")
+}
+
+// themeFile is theme.toml's shape. The nineteen keys at the top level are the
+// base, and the two optional tables override it with whatever that half of the
+// terminal's appearance needs. A file with no tables behaves exactly as it did
+// before they existed, which is what keeps every theme already written valid.
+type themeFile struct {
+	ThemeStyles
+	Dark  ThemeStyles `toml:"dark"`
+	Light ThemeStyles `toml:"light"`
+}
+
 // LoadTheme reads theme.toml at filePath
 // Missing file - use defaults silently
 // Missing/empty fields - fall back to the default value for that field
+// [dark] and [light] tables - the matching one is layered over the base
 func LoadTheme(filePath string) {
 	themeMu.Lock()
 	defer themeMu.Unlock()
@@ -78,12 +111,21 @@ func LoadTheme(filePath string) {
 		return
 	}
 
-	var t ThemeStyles
+	var t themeFile
 	if _, err := toml.Decode(string(data), &t); err != nil {
 		return
 	}
 
-	applyThemeWithFallback(&themeStyles, t, defaultTheme)
+	applyThemeWithFallback(&themeStyles, t.ThemeStyles, defaultTheme)
+
+	half := t.Dark
+	if !BackgroundIsDark() {
+		half = t.Light
+	}
+	// The base is already in place, so anything this half leaves empty keeps what
+	// the base put there rather than reverting to the built in default. themeStyles
+	// is passed by value, so it is a snapshot taken before the copy begins.
+	applyThemeWithFallback(&themeStyles, half, themeStyles)
 }
 
 // applyThemeWithFallback copies non-empty string fields from src into dst,

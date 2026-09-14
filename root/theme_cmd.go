@@ -90,6 +90,23 @@ alias = "#2a2342"
 
 # "alias" tag selected background color (and alias word color)
 alias_sel = "#a277ff"
+
+# Everything above is the base, and applies whatever the terminal is painting.
+# A [dark] or [light] table below overrides it for that appearance only, which is
+# how one file can hold a selection bar that is a tint of its own page rather than
+# one colour that has to work on a near black page and a near white one at once.
+# iris asks the terminal for its background once at startup and picks a table.
+# Keys you leave out of a table keep whatever the base gave them.
+#
+# [dark]
+# sel_bg = "#3b3552"
+#
+# [light]
+# sel_bg = "#dcdbe1"
+# text   = "#474556"
+#
+# Set IRIS_TERM_BACKGROUND to dark or light to pin a half and skip the question,
+# which is what to reach for if your terminal answers OSC 11 badly or not at all.
 `
 		err = os.WriteFile(path, []byte(defaultContent), 0644)
 		if err != nil {
