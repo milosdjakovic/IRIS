@@ -82,7 +82,34 @@ type ThemeStyles struct {
 // Unset means dark, which is what lipgloss returns when a terminal declines to
 // answer, and matches the palette iris shipped as its default for its whole life.
 func BackgroundIsDark() bool {
+	backgroundMu.RLock()
+	told := background
+	backgroundMu.RUnlock()
+	if told != nil {
+		return *told
+	}
 	return !strings.EqualFold(strings.TrimSpace(os.Getenv(BackgroundEnv)), "light")
+}
+
+var (
+	backgroundMu sync.RWMutex
+	background   *bool
+)
+
+// ApplyBackground records an appearance the terminal reported while iris was already
+// running and reloads the theme under it, which is how a half follows a terminal that
+// changes appearance mid session instead of waiting for the next shell.
+//
+// It takes precedence over the environment because it is newer. The environment holds
+// what the terminal said when this session started, and this holds what it said since.
+func ApplyBackground(dark bool) {
+	backgroundMu.Lock()
+	background = &dark
+	backgroundMu.Unlock()
+
+	if path, err := ThemePath(); err == nil {
+		LoadTheme(path)
+	}
 }
 
 // themeFile is theme.toml's shape. The nineteen keys at the top level are the

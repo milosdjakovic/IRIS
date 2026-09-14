@@ -278,6 +278,10 @@ func runWrapper() {
 		}
 		oldStateFd = int(stdinFile.Fd())
 		logger.Debugf("Terminal set to raw mode successfully")
+		// Ask for appearance change reports. A terminal that does not know the mode
+		// ignores this, and the reports are stripped out of the input stream below.
+		writeStdout([]byte(EnableThemeNotifications))
+		defer writeStdout([]byte(DisableThemeNotifications))
 		defer func() {
 			oldStateMu.Lock()
 			defer oldStateMu.Unlock()
@@ -1022,6 +1026,18 @@ func runWrapper() {
 		}
 
 		if n > 0 {
+			// The terminal reports an appearance change on the same stream as
+			// keystrokes and without being asked at that moment, so it is taken out
+			// here, before the shell or any of the handling below can see it.
+			if cleaned, dark, ok := stripThemeNotifications(inputSlice[:n]); ok {
+				config.ApplyBackground(dark)
+				logger.Debugf("terminal reported a theme change, dark=%v", dark)
+				n = copy(inputSlice, cleaned)
+				if n == 0 {
+					continue
+				}
+			}
+
 			if isExecuting() {
 				inBracketedPaste = false
 				_, _ = ptmx.Write(inputSlice[:n])
