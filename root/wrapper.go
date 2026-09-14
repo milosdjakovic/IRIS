@@ -384,6 +384,10 @@ func runWrapper() {
 	}
 	var isCommandActive atomic.Bool
 	var isAltScreenActive atomic.Bool
+	// whether the program behind iris has asked for appearance reports, read off its
+	// output the way the alternate screen is, and the reason a report taken out of
+	// the input is or is not written on to it
+	var childWantsThemeNotify atomic.Bool
 	var disableGhostText atomic.Bool
 	disableGhostText.Store(config.Get().UI.GhostText == config.GhostTextOff)
 	var renderOverlayFn atomic.Value // holds func()
@@ -641,6 +645,7 @@ func runWrapper() {
 		}()
 		var lastPromptBuf []byte
 		var altScreenCarry []byte
+		var themeNotifyCarry []byte
 		buf := make([]byte, 4096)
 		for {
 			n, err := ptmx.Read(buf)
@@ -663,6 +668,17 @@ func runWrapper() {
 			}
 			altScreenCarry = keepAltScreenCarry(chunk)
 
+			// the child asking for or withdrawing appearance reports is its business
+			// with iris, not with the terminal, since iris keeps the mode on for its
+			// own theme regardless. The switch itself still goes out with the chunk,
+			// so a withdrawal is answered by turning the mode straight back on.
+			childWithdrewThemeNotify := false
+			if want, ok := scanThemeNotifySwitch(themeNotifyCarry, chunk); ok {
+				childWantsThemeNotify.Store(want)
+				childWithdrewThemeNotify = !want
+			}
+			themeNotifyCarry = keepThemeNotifyCarry(chunk)
+
 			// Push the pending draw back before writing, not after: stdout is
 			// the terminal (tmux, and whatever renders it), so this write can
 			// block for as long as that side is slow to consume. Postponing
@@ -670,6 +686,9 @@ func runWrapper() {
 			// then lands in the middle of a line the shell is still painting.
 			postponeDeferredDraw()
 			writeStdout(chunk)
+			if childWithdrewThemeNotify {
+				writeStdout([]byte(EnableThemeNotifications))
+			}
 			noteEcho(chunk)
 
 			bufferMu.Lock()
@@ -738,8 +757,11 @@ func runWrapper() {
 				}
 				isCommandActive.Store(false)
 				// the shell reached a new prompt, so nothing owns the alternate
-				// screen any more even if a killed TUI never restored it
+				// screen any more even if a killed TUI never restored it, and
+				// nothing behind iris wants appearance reports any more either,
+				// since a report reaching the line editor is printed as text
 				isAltScreenActive.Store(false)
+				childWantsThemeNotify.Store(false)
 				SetCurrentAISuggestion(nil)
 				bufferMu.Lock()
 				cmdToRecord := lastSubmittedCommand
@@ -794,6 +816,7 @@ func runWrapper() {
 			// a query means the shell's line editor is live, so any full screen
 			// app launched from a widget (atuin, fzf) has handed the screen back
 			isAltScreenActive.Store(false)
+			childWantsThemeNotify.Store(false)
 
 			// iris is writing the line itself while the menu is being walked, so
 			// the shell is only echoing that back. The atomic flips before the
@@ -1052,11 +1075,20 @@ func runWrapper() {
 		if n > 0 {
 			// The terminal reports an appearance change on the same stream as
 			// keystrokes and without being asked at that moment, so it is taken out
-			// here, before the shell or any of the handling below can see it.
-			if cleaned, dark, ok := stripThemeNotifications(inputSlice[:n]); ok {
+			// here, before the shell or any of the handling below can see it. A
+			// program behind iris that asked for the same reports gets each one
+			// written on verbatim, otherwise it would never hear of the change, and
+			// a multiplexer that never hears of it leaves everything inside it deaf.
+			if cleaned, reports := stripThemeNotifications(inputSlice[:n]); len(reports) > 0 {
+				dark := reportsDark(reports)
 				config.ApplyBackground(dark)
 				repaintForAppearance()
-				logger.Debugf("terminal reported a theme change, dark=%v", dark)
+				if childWantsThemeNotify.Load() {
+					for _, report := range reports {
+						_, _ = ptmx.Write(report)
+					}
+				}
+				logger.Debugf("terminal reported a theme change, dark=%v, relayed=%v", dark, childWantsThemeNotify.Load())
 				n = copy(inputSlice, cleaned)
 				if n == 0 {
 					continue
