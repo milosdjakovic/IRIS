@@ -1009,6 +1009,30 @@ func runWrapper() {
 		})
 	})
 
+	// A terminal that changes appearance repaints its own palette, so everything the
+	// box draws in a palette slot follows along without iris doing anything at all.
+	// Every colour named by hex stays exactly where it was, the selection bar among
+	// them, until the box is drawn again, and nothing else is going to draw it. So the
+	// report asks for a repaint here. It goes around renderOverlayFn rather than
+	// through it, because that one declines while the user is navigating the menu,
+	// which is the moment a stale bar is most visible.
+	repaintForAppearance := func() {
+		if !overlay.IsVisible() {
+			return
+		}
+		renderMu.Lock()
+		defer renderMu.Unlock()
+		if renderTimer != nil {
+			return
+		}
+		renderTimer = time.AfterFunc(20*time.Millisecond, func() {
+			renderMu.Lock()
+			renderTimer = nil
+			renderMu.Unlock()
+			renderMenuNow()
+		})
+	}
+
 	if renderer, ok := renderOverlayFn.Load().(func()); ok {
 		renderer()
 	}
@@ -1031,6 +1055,7 @@ func runWrapper() {
 			// here, before the shell or any of the handling below can see it.
 			if cleaned, dark, ok := stripThemeNotifications(inputSlice[:n]); ok {
 				config.ApplyBackground(dark)
+				repaintForAppearance()
 				logger.Debugf("terminal reported a theme change, dark=%v", dark)
 				n = copy(inputSlice, cleaned)
 				if n == 0 {
