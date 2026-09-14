@@ -105,8 +105,10 @@ alias_sel = "#a277ff"
 # sel_bg = "#dcdbe1"
 # text   = "#474556"
 #
-# Set IRIS_TERM_BACKGROUND to dark or light to pin a half and skip the question,
-# which is what to reach for if your terminal answers OSC 11 badly or not at all.
+# IRIS_TERM_BACKGROUND holds the answer, and iris overwrites it every time it asks,
+# so it cannot go stale in a shell that outlives the appearance it was set under.
+# Setting it by hand only takes effect when the terminal declines to answer at all,
+# which makes it the fallback for a terminal with no OSC 11 rather than an override.
 `
 		err = os.WriteFile(path, []byte(defaultContent), 0644)
 		if err != nil {
