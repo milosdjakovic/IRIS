@@ -62,6 +62,8 @@ func Lookup(input string) []Suggestion {
 	originalTokens := append([]string(nil), tokens...)
 	originalPrefix := ""
 	expandedPrefix := ""
+	shellAliasOriginal := ""
+	shellAliasExpanded := ""
 
 	if len(tokens) == 1 && tokens[0] == "" {
 		return topLevelSuggestions("", aliases, abbrs)
@@ -83,6 +85,17 @@ func Lookup(input string) []Suggestion {
 			aliasTokens := Tokenize(target)
 			if len(aliasTokens) > 0 && aliasTokens[len(aliasTokens)-1] == "" {
 				aliasTokens = aliasTokens[:len(aliasTokens)-1]
+			}
+			// Remember what the user actually typed. Expansion has to happen so the
+			// target's spec and Generator can fire, but a suggestion is text the user
+			// is being offered for their own command line, so it has to read back in
+			// their words. Without this the row for "cd " renders as "z /path", and
+			// ghost text dies too, since it tests the suggestion against the literal
+			// buffer and "z /path" never has "cd " as a prefix. Tool aliases below
+			// already keep this bookkeeping; shell aliases simply never did.
+			if len(aliasTokens) > 0 {
+				shellAliasOriginal = tokens[0]
+				shellAliasExpanded = strings.Join(aliasTokens, " ")
 			}
 			tokens = append(aliasTokens, tokens[1:]...)
 		}
@@ -382,6 +395,18 @@ func Lookup(input string) []Suggestion {
 		for i := range results {
 			if after, ok := strings.CutPrefix(results[i].Cmd, expandedPrefix); ok {
 				results[i].Cmd = originalPrefix + after
+			}
+		}
+	}
+
+	// Undo the shell alias substitution in the displayed command. This runs after the
+	// tool alias restoration above rather than before it, because when both fired that
+	// one has already rewritten the row back to the originally typed pair, and a second
+	// pass looking for the expanded root would either miss or corrupt it.
+	if shellAliasExpanded != "" && shellAliasOriginal != "" {
+		for i := range results {
+			if after, ok := strings.CutPrefix(results[i].Cmd, shellAliasExpanded); ok {
+				results[i].Cmd = shellAliasOriginal + after
 			}
 		}
 	}

@@ -154,10 +154,61 @@ func TestLookup_AliasFileGenerator(t *testing.T) {
 	if len(results) == 0 {
 		t.Errorf("expected file suggestions for alias 'nv ' -> 'nvim', got none")
 	}
+	// The alias is expanded internally so nvim's Generator can fire, but the row is
+	// text offered back to the user, so it has to read as the word they typed.
 	for _, r := range results {
-		if !strings.HasPrefix(r.Cmd, "nvim ") {
-			t.Errorf("expected suggestion to start with 'nvim ', got %q", r.Cmd)
+		if !strings.HasPrefix(r.Cmd, "nv ") {
+			t.Errorf("expected suggestion to start with 'nv ', got %q", r.Cmd)
 		}
+		if strings.HasPrefix(r.Cmd, "nvim ") {
+			t.Errorf("suggestion leaked the alias target instead of the typed word, got %q", r.Cmd)
+		}
+	}
+}
+
+// A shell alias whose target carries arguments has to be restored whole, not just
+// its first word, or the flags of the target leak onto the user's line.
+func TestLookup_AliasWithArgumentsRestoresTypedWord(t *testing.T) {
+	ResetRegistry()
+	Register(&Spec{
+		Name:      "eza",
+		Generator: FileGenerator(),
+	})
+	ShellAliases = map[string]string{"ll": "eza -l"}
+
+	results := Lookup("ll ")
+	if len(results) == 0 {
+		t.Fatalf("expected file suggestions for alias 'll ' -> 'eza -l', got none")
+	}
+	for _, r := range results {
+		if !strings.HasPrefix(r.Cmd, "ll ") {
+			t.Errorf("expected suggestion to start with 'll ', got %q", r.Cmd)
+		}
+		if strings.Contains(r.Cmd, "eza") {
+			t.Errorf("suggestion leaked the alias target, got %q", r.Cmd)
+		}
+	}
+}
+
+// Ghost text is computed by testing the top suggestion against the literal buffer,
+// so a row that reads as the target rather than the typed word silently renders no
+// ghost text at all. This asserts the prefix relationship that check depends on.
+func TestLookup_AliasSuggestionKeepsBufferAsPrefix(t *testing.T) {
+	ResetRegistry()
+	Register(&Spec{
+		Name:      "eza",
+		Generator: FileGenerator(),
+	})
+	ShellAliases = map[string]string{"ls": "eza"}
+
+	const buffer = "ls "
+	results := Lookup(buffer)
+	if len(results) == 0 {
+		t.Fatalf("expected file suggestions for alias 'ls ' -> 'eza', got none")
+	}
+	if !strings.HasPrefix(results[0].Cmd, buffer) {
+		t.Errorf("top suggestion %q does not have the typed buffer %q as a prefix, "+
+			"so ghost text would not render", results[0].Cmd, buffer)
 	}
 }
 
